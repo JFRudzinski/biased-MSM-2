@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 from copy import copy, deepcopy
 from msmtools.analysis.dense.pcca import pcca
-from functions import rmse_mfpt_all, regulate_constraint
+from tools.functions import rmse_mfpt_all, regulate_constraint
 
 def QW_msstates( bins ):
     # Definition of the metastable states, specifically for the quad well system!

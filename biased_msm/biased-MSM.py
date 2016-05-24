@@ -11,12 +11,12 @@ import warnings
 import numpy as np
 # stuff from pyemma
 import pyemma
-from pyemma.msm.io import read_discrete_trajectory
-import pyemma.msm.estimation.dense.transition_matrix_biased_sampling_rev as bias_samp
+from pyemma.util.discrete_trajectories import read_discrete_trajectory
 # other tools specifically built for this program
+import msmtools_ext.transition_matrix_biased_sampling_rev as bias_samp
 import input_data as ID
 import samp_data as SD
-from functions import *
+from tools.functions import *
 # other stuff
 from copy import copy, deepcopy
 import random

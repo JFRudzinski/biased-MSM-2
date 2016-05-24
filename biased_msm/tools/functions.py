@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 from msmtools.analysis import eigenvalues
 from msmtools.analysis import mfpt
+from msmtools.estimation import largest_connected_set, largest_connected_submatrix
 
 # other stuff
 from copy import copy, deepcopy
@@ -73,8 +74,8 @@ def trim_Cmat( Cmat, lcc, ID ):
             lcc = np.delete(lcc, (shift))
             nrem += 1
     # reensure that the trimmed matrix is connected!
-    lcc_tmp = pyemma.msm.estimation.largest_connected_set(Cmat, directed=True)
-    Cmat_cc = pyemma.msm.estimation.largest_connected_submatrix(Cmat, directed=True, lcc=lcc_tmp)
+    lcc_tmp = largest_connected_set(Cmat, directed=True)
+    Cmat_cc = largest_connected_submatrix(Cmat, directed=True, lcc=lcc_tmp)
     lcc = lcc[lcc_tmp]
     return Cmat_cc, lcc
 

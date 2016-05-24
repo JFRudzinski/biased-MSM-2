@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 from copy import copy, deepcopy
 from msmtools.analysis.dense.pcca import pcca
-from functions import rmse_mfpt_all, regulate_constraint
+from tools.functions import rmse_mfpt_all, regulate_constraint
 
 def ALA3_msstates( T_AA ):
 

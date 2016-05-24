@@ -3,7 +3,7 @@ __author__ = 'JFR'
 import numpy as np
 import math
 from copy import copy, deepcopy
-from functions import *
+from tools.functions import *
 
 class SampData(object):
     """
