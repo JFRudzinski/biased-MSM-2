@@ -6,6 +6,7 @@ import math
 from copy import copy, deepcopy
 from msmtools.analysis.dense.stationary_vector import stationary_distribution_from_backward_iteration
 from random import shuffle
+import scipy
 
 __author__ = "Hao Wu, Frank Noe"
 __copyright__ = "Copyright 2015, John D. Chodera and Frank Noe"
@@ -20,46 +21,45 @@ eps=np.spacing(0)
 log=math.log
 exp=math.exp
 
-class TransitionMatrixBiasedSamplerRev(object):
+class RateMatrixBiasedSamplerRev(object):
     """
-    Reversible transition matrix sampling using the algorithm from Trendelkamp, Noe, JCP, 2013 for variable stationary distribution.
-    We have added an adjustment to acceptance probability which corresponds to sampling a normal distribution about some constraint, 
-    while employing the unconstrained mle as a prior.
+    Reversible rate matrix sampling using Metzner-type sampling (2010), with the rate matrix construction from McGibbon and Pande (2015).
     """
 
-    def __init__(self, _C, _prior, _X, _MC_type, _lT): 
+    def __init__(self, _C, _prior, _S, _MC_type, _lT, _tau): 
         """
-        Initializes the transition matrix sampler with the observed count matrix
+        Initializes the rate matrix sampler with the observed count matrix
 
         Parameters:
         -----------
         C : ndarray(n,n)
-            count matrix containing observed counts. Do not add a prior, because this sampler intrinsically
-            assumes a -1 prior!
+            count matrix containing observed counts.
 
-        X : ndarray(n,n)
-            expected count matrix, this may be the mle or just the simple symmetrized counts
+        S : ndarray(n,n)
+            this is sort of the analog of the expected count matrix, when working in the rate matrix representation (see McGibbon,2015) 
 
         """
         # Variables depending on init input
         self.C = np.array(_C, dtype=np.float64)
-        self.Xexp = deepcopy(_X)
+        self.Sexp = deepcopy(_S)
         self.prior = deepcopy(_prior)
         self.MC_types = [ 'fixed_step', 'corr_move' ]
         self.MC_type = deepcopy(_MC_type)
         self.lT = _lT
+        self.tau = _tau
         self.n = self.C.shape[0]
         self.Crowsum = np.sum(self.C, dtype=float, axis=1, keepdims=True)
         self.Ccolsum = np.sum(self.C, dtype=float, axis=0, keepdims=True)
         self.sc = float(self.C.shape[0]*self.C.shape[1])
-        #self.chng_list = np.array( np.where( self.Xexp > 1e-12 ) ) 
-        self.chng_list = np.array( np.where( self.Xexp > -1. ) ) # try changing all elements
+        #self.chng_list = np.array( np.where( self.Sexp > 1e-12 ) ) 
+        self.chng_list = np.array( np.where( self.Sexp > -1. ) ) # try changing all elements
+        self.chng_list = np.delete(self.chng_list, np.where( self.chng_list[0][:] == self.chng_list[1][:] ) ,axis=1) # the diagonal elements are always constrained in this case.
         # 
 	self.eps = 0.0
 	self.lamb = None
 	# To be updated during each step
-        self.X = None
-	self.T = None
+        self.S = None
+	self.K = None
         self.mu = None
         self.EW = None
         self.EW_old = None
@@ -77,32 +77,24 @@ class TransitionMatrixBiasedSamplerRev(object):
         self.nprop_ndE = 0
         self.nprop_pdE = 0
         self.nacc_pdE = 0
-        # degrees of freedom.
-        self.dof = np.zeros(self.n)
-	# variables associated with the beta distribution
-        self.alpha = np.zeros(self.n)
-        self.beta = np.zeros(self.n)
-        # arrays depending only on C, not T
-        for i in range (0, self.n):
-            self.dof[i] = self.n
-            self.alpha[i] = self.Crowsum[i] + self.dof[i] - self.C[i,i] - 1
-            self.beta[i] = self.C[i,i] + 1
 
+    def _K_to_T(self):
+	return scipy.linalg.expm(self.tau*self.K, q=None)
 
-    def _X_to_T(self):
-        self.T =  self.X / np.sum(self.X, dtype=float, axis=1, keepdims=True)
-    def _X_to_mu(self):
-        self.mu = np.sum(self.X, dtype=float, axis=1, keepdims=True)
+    def _S_to_K(self):
+        self.K = np.dot( np.dot(np.diag(sqrt(self.mu)**(-1)),self.S), np.diag(sqrt(self.mu)) )
+        for i in range(self.K.shape[0]):
+            self.K[i,i] = -( np.sum(self.K[i]) - self.K[i,i] )
 
-    def _T_to_X(self):
-        mu = stationary_distribution_from_backward_iteration(self.T)
-        self.X = np.dot(np.diag(mu), self.T)
-        self.X /= np.sum(self.X, dtype=float)
+    def _K_to_mu(self):
+        self.mu = stationary_distribution_from_backward_iteration(self._K_to_T())
+
+    def _K_to_S(self):
+        self.S = np.dot( np.dot(np.diag(sqrt(self.mu)),self.K), np.diag(sqrt(self.mu)**(-1)) )
+        self.S /= np.sum(self.S, dtype=float)
 
     def _update_arrays(self, flag_acc):
         if ( flag_acc ):
-            # stat dist
-            self._X_to_mu()
             # Energies
             self.EW_old = deepcopy(self.EW)
             self.EQ_old = deepcopy(self.EQ)
@@ -113,8 +105,9 @@ class TransitionMatrixBiasedSamplerRev(object):
 
 
     def _logprob_T(self):
-        assert np.all(self.T >= 0)
-        return np.sum(np.multiply(self.C, np.ma.log(self.T)), dtype=float) # avoid 0 elements in the log arg with np.ma.log 
+        T = self._K_to_T
+        assert np.all(T >= 0)
+        return np.sum(np.multiply(self.C, np.ma.log(T)), dtype=float) # avoid 0 elements in the log arg with np.ma.log 
 
     def _EQ(self):
         self.EQ = deepcopy( -1.0*(self._logprob_T()) )
@@ -122,7 +115,7 @@ class TransitionMatrixBiasedSamplerRev(object):
         self.EQ /= np.abs(self.EQ_AA - self.EQ_CG)
 
     def _EW(self,FW):
-        self.EW = deepcopy( FW(self.T) )
+        self.EW = deepcopy( FW(self.K) )
         self.EW /= self.F_CG
 
     def _step_Metzner_MC(self, i, j, randU):
@@ -131,85 +124,32 @@ class TransitionMatrixBiasedSamplerRev(object):
                       double* Q, const double* random, double* sc, int n_states,
                       int n_steps)
         '''
-        if (self.fixed_pi is True):
-            frac = 0.5 # only allow changes by half of the current value
-            a0 = -frac*self.X[i,j]
-            b0 = frac*min(self.X[i,i],self.X[j,j])
-            # Now, add a limit for individual T values: Tij <= lT
-            # first, Tij,Tji <= lT
-            b1 = (self.lT * self.mu[i]) - self.X[i,j]
-            b2 = (self.lT * self.mu[j]) - self.X[j,i]
-            # now, Tii,Tjj <= lT
-            a1 = self.X[i,i] - self.lT*self.mu[i]
-            a2 = self.X[j,j] - self.lT*self.mu[j]
-            # nb - Til(l!=j),Tjl(l!=i) <= lT auto satisfied.
-            # now, get the bounds
-            a = max(a0,a1,a2)
-            b = min(b0,b1,b2)
-            if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
-                a = 0.
-        else:
-            sc = np.sum(self.X, dtype=float)
-            kmin = 0.999 * sc # Similar to the Metzner paper, rescaled for arbitrary X normalization
-            kpls = 1.001 * sc
-            if (i == j):
-                a0 = max(-0.5*self.X[i,j], kmin - sc)
-                b0 = min( 0.5*self.X[i,j], kpls - sc)
-                # Now, add a limit for individual T values: Tij <= lT
-                # first, Tij,Tji <= lT
-                if (np.abs(self.lT - 1.0) >= 1e-6):
-                    b1 = (-self.X[i,j] + (self.lT*np.sum(self.X,axis=1)[i]) ) / (1.0-self.lT)
-                else:
-                    b1 = b0
-                # now, Til(l!=j),Tjl(l!=i) <= lT
-                a1 = (self.X[i,:] - (self.lT*np.sum(self.X,axis=1)[i]) ) / (self.lT)
-                a1 = np.delete(a1,[j])
-                a1 = np.max(a1)
-                # now, get the bounds
-                a = max(a0,a1)
-                b = min(b0,b1)
-                if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
-                    a = 0.
-            else: 
-                # the normal Metzner constraints plus slight stricter adjustments
-                a0 = max(-0.5*self.X[i,j], 0.5*(kmin - sc)) # JFR - adjusted a0, b0 so that Xij can change by at most half its current value
-                b0 = min( 0.5*self.X[i,j], 0.5*(kpls - sc)) 
-                # Now, add a limit for individual T values: Tij <= lT
-                # first, Tij,Tji <= lT
-                if (np.abs(self.lT - 1.0) >= 1e-6):
-                    b1 = (-self.X[i,j] + (self.lT*np.sum(self.X,axis=1)[i]) ) / (1.0-self.lT)
-                    b2 = (-self.X[j,i] + (self.lT*np.sum(self.X,axis=1)[j]) ) / (1.0-self.lT)
-                else:
-                    b1 = b0
-                    b2 = b0
-                # now, Til(l!=j),Tjl(l!=i) <= lT
-                a1 = (self.X[i,:] - (self.lT*np.sum(self.X,axis=1)[i]) ) / (self.lT)
-                a1 = np.delete(a1,[j])
-                a1 = np.max(a1)
-                a2 = (self.X[j,:] - (self.lT*np.sum(self.X,axis=1)[j]) ) / (self.lT)
-                a2 = np.delete(a2,[i])
-                a2 = np.max(a2)
-                # now, get the bounds
-                a = max(a0,a1,a2)
-                b = min(b0,b1,b2)
-                if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
-                    a = 0.
-           
+        # Always make a "fixed_pi" move
+        #if (self.fixed_pi is True):
+        frac = 0.5 # only allow changes by this fraction of the current value
+        sc = np.sum(self.S, dtype=float) # also put a constraint on the total sum
+        kmin = 0.99 * sc # Similar to the Metzner paper, need to test these values for the symmetric rate matrix
+        kpls = 1.01 * sc
+        a0 = max( -frac*self.S[i,j], kmin-sc )
+        b0 = min( frac*min(self.S[i,i],self.S[j,j]), kpls-sc )
+        # now, add restrictions for the diagonal elements
+        b1 = (self.mu[i] / self.mu[j]) * self.S[i,i]
+        b2 = (self.mu[j] / self.mu[i]) * self.S[j,j]
+        # now, get the bounds
+        a = max(a0)
+        b = min(b0,b1,b2)
+        if ( self.S[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
+            a = 0.
+
         # check the bounds
         if ( a > 0 or b < 0 ):
             raise ValueError('Something is wrong with the bounds in _step_Metzner_MC()!')
         # get and make the MC move
         self.eps = randU.uniform(a,b,1)
-	self.X[i,j] += self.eps
-	if ( i != j ):
-	    self.X[j,i] += self.eps
-        if (self.fixed_pi is True):
-            self.X[i,i] += (self.mu[i] - np.sum(self.X, dtype=float, axis=1, keepdims=True)[i]) # -= self.eps
-            if (abs(self.X[i,i]) < 1e-12):
-                self.X[i,i] = 0.00
-            self.X[j,j] += (self.mu[j] - np.sum(self.X, dtype=float, axis=1, keepdims=True)[j]) # -= self.eps
-            if (abs(self.X[j,j]) < 1e-12):
-                self.X[j,j] = 0.00
+	self.S[i,j] += self.eps
+	self.S[j,i] += self.eps
+        self.S[i,i] -= (self.mu[i]/self.mu[j])*self.eps
+        self.S[j,j] -= (self.mu[j]/self.mu[i])*self.eps
 
         # update T
 	self._X_to_T()
@@ -218,6 +158,31 @@ class TransitionMatrixBiasedSamplerRev(object):
 
 	return (self.EQ - self.EQ_old) # return the energy difference, dEQ
 
+    def _step_redist_pi(self, i, j, randU):
+        '''
+          change the stationary distribution
+        '''
+        frac = 0.01 # only allow changes by this fraction of the current value
+        a0 = max( -frac*self.mu[i] )
+        b0 = min( frac*self.mu[j] ) 
+        # now, get the bounds
+        a = max(a0)
+        b = min(b0)
+
+        # check the bounds
+        if ( a > 0 or b < 0 ):
+            raise ValueError('Something is wrong with the bounds in _step_redist_pi()!')
+        # get and make the MC move
+        self.eps = randU.uniform(a,b,1)
+        self.mu[i] += self.eps
+        self.mu[j] -= self.eps
+
+        # update K
+        self._S_to_K()
+        # get the new log prob
+        self._EQ()
+
+        return (self.EQ - self.EQ_old) # return the energy difference, dEQ
 
 
     def _update_Metzner_MC_fixedstep(self, n_step, FW):
@@ -247,10 +212,10 @@ class TransitionMatrixBiasedSamplerRev(object):
             i = shuff_chng_list[0][ind]
             j = shuff_chng_list[1][ind]
             # save the old state
-            saveij = deepcopy(self.X[i,j])
-            saveii = deepcopy(self.X[i,i])
-            savejj = deepcopy(self.X[j,j])
-            # make the MC move
+            saveij = deepcopy(self.S[i,j])
+            saveii = deepcopy(self.S[i,i])
+            savejj = deepcopy(self.S[j,j])
+            # make a fixed_pi MC move
             dEQ = self._step_Metzner_MC(i, j, randU)
 
             # calculate the constraint energy from the given error function
@@ -266,15 +231,43 @@ class TransitionMatrixBiasedSamplerRev(object):
                 pacc = np.exp( -self.beta*dEtot )
                 if( np.random.uniform(0,1,1) > pacc ): # do not accept and revert back to original matrix
                     # restore the old state
-                    self.X[i,j] = deepcopy(saveij)
-                    self.X[j,i] = deepcopy(saveij)
-                    self.X[i,i] = deepcopy(saveii)
-                    self.X[j,j] = deepcopy(savejj)
-                    self._X_to_T()
+                    self.S[i,j] = deepcopy(saveij)
+                    self.S[j,i] = deepcopy(saveij)
+                    self.S[i,i] = deepcopy(saveii)
+                    self.S[j,j] = deepcopy(savejj)
+                    self._S_to_K()
                     self._update_arrays( False ) # EQ -> EQ_old, EW -> EW_old
                 else:
                     self.nacc_pdE += 1 # keeping track of the accepted moves
                     self._update_arrays( True ) # mu -> mu(T), EQ_old -> EQ, EW_old -> EW
+
+            if ( self.fixed_pi is False ): # also try to redist the stat dist
+                # save the old state
+                save_ii = deepcopy(self.mu[i])
+                save_jj = deepcopy(self.mu[j])
+                # make the MC move
+                dEQ = self._step_redist_pi(i, j, randU)
+
+                # calculate the constraint energy from the given error function
+                self._EW(FW) # This is expensive!
+                dEW = self.EW - self.EW_old
+                dEtot = self.lamb*dEQ + (1.0-self.lamb)*dEW
+
+                if (dEtot <= 0.0): # accept the move
+                    self.nprop_ndE += 1
+                    self._update_arrays( True ) # EQ_old -> EQ, EW_old -> EW
+                else:
+                    self.nprop_pdE += 1
+                    pacc = np.exp( -self.beta*dEtot )
+                    if( np.random.uniform(0,1,1) > pacc ): # do not accept and revert back to original matrix
+                        # restore the old state
+                        self.mu[i] = deepcopy(saveii)
+                        self.mu[j] = deepcopy(savejj)
+                        self._S_to_K()
+                        self._update_arrays( False ) # EQ -> EQ_old, EW -> EW_old
+                    else:
+                        self.nacc_pdE += 1 # keeping track of the accepted moves
+                        self._update_arrays( True ) # EQ_old -> EQ, EW_old -> EW
 
 
     def _update_Metzner_MC_fixedstep_corrmove(self, n_step, FW):
@@ -305,7 +298,7 @@ class TransitionMatrixBiasedSamplerRev(object):
             step_max = n_step
             step_len = min(step_max,n_MC-step_ctr) # for the last step, in case n_MC is not perfectly divisible by n_step
             # save the old data
-            Xold = deepcopy(self.X)
+            Sold = deepcopy(self.S)
             EQold = deepcopy(self.EQ)
 
             for ind in range(step_ctr, step_ctr+step_len): # Loop over the changeable elements
@@ -314,10 +307,10 @@ class TransitionMatrixBiasedSamplerRev(object):
                 i = shuff_chng_list[0][ind]
                 j = shuff_chng_list[1][ind]
                 # save the old state
-                saveij = deepcopy(self.X[i,j])
-                saveii = deepcopy(self.X[i,i])
-                savejj = deepcopy(self.X[j,j])
-                # make the MC move
+                saveij = deepcopy(self.S[i,j])
+                saveii = deepcopy(self.S[i,i])
+                savejj = deepcopy(self.S[j,j])
+                # make a fixed_pi MC move
                 dEQ = self._step_Metzner_MC(i, j, randU)
 
                 # evaluate the energy as if EW did not change
@@ -330,14 +323,38 @@ class TransitionMatrixBiasedSamplerRev(object):
                     pacc = np.exp( -self.beta*dEtot )
                     if( np.random.uniform(0,1,1) > pacc ): # do not accept and revert back to original matrix
                         # restore the old state
-                        self.X[i,j] = deepcopy(saveij)
-                        self.X[j,i] = deepcopy(saveij)
-                        self.X[i,i] = deepcopy(saveii)
-                        self.X[j,j] = deepcopy(savejj)
-                        self._X_to_T()
+                        self.S[i,j] = deepcopy(saveij)
+                        self.S[j,i] = deepcopy(saveij)
+                        self.S[i,i] = deepcopy(saveii)
+                        self.S[j,j] = deepcopy(savejj)
+                        self._S_to_K()
                         self._update_arrays( False ) # EQ -> EQ_old, EW -> EW_old
                     else:
                         self._update_arrays( True ) # mu -> mu(T), EQ_old -> EQ, EW_old -> EW    
+
+                if ( self.fixed_pi is False ): # also try to redist the stat dist
+                    # save the old state
+                    save_ii = deepcopy(self.mu[i])
+                    save_jj = deepcopy(self.mu[j])
+                    # make the MC move
+                    dEQ = self._step_redist_pi(i, j, randU)
+
+                    # evaluate the energy as if EW did not change
+                    dEW = 0.0
+                    dEtot = self.lamb*dEQ + (1.0-self.lamb)*dEW
+
+                    if (dEtot <= 0.0): # accept the move
+                        self._update_arrays( True ) # EQ_old -> EQ, EW_old -> EW
+                    else:
+                        pacc = np.exp( -self.beta*dEtot )
+                        if( np.random.uniform(0,1,1) > pacc ): # do not accept and revert back to original matrix
+                            # restore the old state
+                            self.mu[i] = deepcopy(saveii)
+                            self.mu[j] = deepcopy(savejj)
+                            self._S_to_K()
+                            self._update_arrays( False ) # EQ -> EQ_old, EW -> EW_old
+                        else:
+                            self._update_arrays( True ) # EQ_old -> EQ, EW_old -> EW
             
             # Afer the final sub-move, evaluate a MC step according to EW alone
             dEQ = 0.0
@@ -353,10 +370,11 @@ class TransitionMatrixBiasedSamplerRev(object):
                 self.nprop_pdE += 1
                 pacc = np.exp( -self.beta*dEtot )
                 if( np.random.uniform(0,1,1) > pacc ): # do not accept and revert back to original matrix
-                    self.X = deepcopy(Xold)
-                    self._X_to_T()
+                    self.S = deepcopy(Sold)
+                    self._S_to_K()
                     # update some arrays
-                    self._X_to_mu()
+                    if ( not self.fixed_pi ):
+                        self._K_to_mu()
                     self.EQ_old = deepcopy(EQold)
                     self._update_arrays( False ) # EQ -> EQ_old, EW -> EW_old
                 else:
@@ -369,7 +387,7 @@ class TransitionMatrixBiasedSamplerRev(object):
 
 
 
-    def sample(self, n_step, T_init = None, X_init = None, EQ_CG = None, EQ_AA = None, F_fun = None, F_CG = None, beta = None, lamb = None, fixed_pi = False):
+    def sample(self, n_step, K_init = None, S_init = None, mu_init = None, EQ_CG = None, EQ_AA = None, F_fun = None, F_CG = None, beta = None, lamb = None, fixed_pi = False):
         """
         Runs n_step successful! Metzner (or fixed-pi Metzner-type) sampling steps and returns a new transition matrix.
 
@@ -377,10 +395,12 @@ class TransitionMatrixBiasedSamplerRev(object):
         -----------
         n_step : int
             number of Metzner-type sampling steps.
-        T_init : ndarray (n,n)
-            initial transition matrix. If not given, will start from C+C.T, row-normalized
-        X_init: ndarray (n,n)
-            initial count matrix.  If given, the initial T will be inferred directly.
+        K_init : ndarray (n,n)
+            initial rate matrix.
+        S_init: ndarray (n,n)
+            initial symm rate matrix.  If given along with mu, the initial K will be inferred directly.
+        mu_init: ndarray (n)
+            initial stationary distribution. 
         EQ_CG: float
             the MSM energy of the best CG model (i.e., the mle)
         EQ_AA: float
@@ -398,10 +418,10 @@ class TransitionMatrixBiasedSamplerRev(object):
 
         Returns:
         --------
-        self.T: ndarray (n,n)
-            The transition matrix after n_step sampling steps
-        self.X: ndarray (n,n)
-            The count matrix after n_step sampling steps
+        self.K: ndarray (n,n)
+            The rate matrix after n_step sampling steps
+        self.S: ndarray (n,n)
+            The symm rate matrix after n_step sampling steps
         self.mu: ndarray (n)
             The stationary distribution after n_step sampling steps
         self.EQ: float
@@ -440,23 +460,21 @@ class TransitionMatrixBiasedSamplerRev(object):
             self.F_CG = deepcopy(F_CG)
         else:
             self.F_CG = 1.0
-        # T_init given?
-        if (X_init is not None):
-            self.X = deepcopy(X_init)
-            self._X_to_T()
-        elif (T_init is not None):
-            self.T = deepcopy(T_init)
-	    self._T_to_X()
+        if ( (S_init is not None) and (mu_init is not None):
+            self.S = deepcopy(S_init)
+            self.mu = deepcopy(mu_init)
+            self._S_to_K()
+        elif (K_init is not None):
+            self.K = deepcopy(K_init)
+            self._K_to_mu()
+	    self._K_to_S()
 	else:
-	    self.X = 0.5 * (self.C + self.C.T)
-	    self._X_to_T()
-            #raise ValueError('not reading X_init properly')
-        # reversible?
-        if not np.allclose(self.X, self.X.T):
-            raise ValueError('Initial transition matrix is not reversible.')
+            raise ValueError('No valid starting matrix! Check your input')
+        # symmetric?
+        if not np.allclose(self.S, self.S.T):
+            raise ValueError('Initial symmetric rate matrix is not symmetric.')
 
         # init the arrays 
-        self._X_to_mu()
         if (F_fun is not None):
             self._EW(F_fun)
             self.EW_old = deepcopy(self.EW)
@@ -466,7 +484,7 @@ class TransitionMatrixBiasedSamplerRev(object):
 
         # adjust the changeable element list for fixed-pi
         if (self.fixed_pi is True):
-            self.chng_list = np.delete(self.chng_list, np.where( self.chng_list[0][:] == self.chng_list[1][:] ) ,axis=1)
+            self.chng_list = np.delete(self.chng_list, np.where( self.chng_list[0][:] <= self.chng_list[1][:] ) ,axis=1)
          
         # do the MC! 
         if ( self.MC_type == self.MC_types[0] ): # if MC_type == 'fixed_step'

@@ -9,7 +9,7 @@ from msmtools.estimation import largest_connected_set, largest_connected_submatr
 # other stuff
 from copy import copy, deepcopy
 import random
-
+import scipy
 
 ##### GRID FUNCTIONS #####
 
@@ -101,9 +101,23 @@ def T_to_X (C, T, mu):
     X *= ( (X.shape[0]*X.shape[1])/np.sum(X, dtype=float) )
     return X
 
-
 def X_to_T(X):
     return  ( X / np.sum(X, dtype=float, axis=1, keepdims=True) )
+
+def K_to_T(K, tau):
+    return scipy.linalg.expm(tau*K, q=None)
+
+def S_to_K(S, mu):
+    K = np.dot( np.dot(np.diag(sqrt(mu)**(-1)),S), np.diag(sqrt(mu)) )
+    for i in range(K.shape[0]):
+        K[i,i] = -( np.sum(K[i]) - K[i,i] )
+
+def K_to_mu(K, tau):
+    mu = stationary_distribution_from_backward_iteration(K_to_T(K, tau))
+
+def K_to_S(K, mu):
+    S = np.dot( np.dot(np.diag(sqrt(mu)),K), np.diag(sqrt(mu)**(-1)) )
+    S /= np.sum(S, dtype=float)
 
 
 ##### OBSERVABLE FUNCTIONS #####

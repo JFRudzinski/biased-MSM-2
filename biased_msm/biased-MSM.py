@@ -104,8 +104,8 @@ elif ( ID.TRJ_type == TRJ_types[1] ): # TRJ_type == '2D'
     xbins_trim_CG, ybins_trim_CG = bins_to_values(xgrids_trim_CG, ygrids_trim_CG, bin_ctrs_CG)
 
 # save the Cmats
-#np.save('Cmat_AA',Cmat_AA_cc)
-#np.save('Cmat_CG',Cmat_CG_cc)
+np.save('Cmat_AA',Cmat_AA_cc)
+np.save('Cmat_CG',Cmat_CG_cc)
 
 # mle data
 SD_AA = SD.SampData()
@@ -114,10 +114,23 @@ SD_CG = SD.SampData()
 SD_CG.outfnm = ID.outfnm+'_CG'
 
 # calculate the mle
-SD_AA.T, SD_AA.mu = pyemma.msm.estimation.transition_matrix(Cmat_AA_cc, reversible=True, mu=None, return_statdist = True)
-SD_CG.T, SD_CG.mu = pyemma.msm.estimation.transition_matrix(Cmat_CG_cc, reversible=True, mu=None, return_statdist = True)
-SD_AA.X = T_to_X(Cmat_AA_cc, SD_AA.T, SD_AA.mu)
-SD_CG.X = T_to_X(Cmat_CG_cc, SD_CG.T, SD_CG.mu)
+if ( ID.flag_CTMM ):
+    from msmbuilder.msm.ratematrix import ContinuousTimeMSM
+    CTMM_AA = ContinuousTimeMSM(lag_time=tau_AA)
+    CTMM_CG = ContinuousTimeMSM(lag_time=tau_CG)
+    CTMM_AA.fit(dtraj_AA)
+    CTMM_CG.fir(dtraj_CG)
+    SD_AA.T = CTMM_AA.ratemat_
+    SD_CG.T = CTMM_CG.ratemat_
+    SD_AA.mu = K_to_mu(SD_AA.T, tau_AA)
+    SD_CG.mu = K_to_mu(SD_CG.T, tau_CG)
+    SD_AA.X = K_to_S(SD_AA.T, SD_AA.mu)
+    SD_CG.X = K_to_S(SD_CG.T, SD_CG.mu)
+else:
+    SD_AA.T, SD_AA.mu = pyemma.msm.estimation.transition_matrix(Cmat_AA_cc, reversible=True, mu=None, return_statdist = True)
+    SD_CG.T, SD_CG.mu = pyemma.msm.estimation.transition_matrix(Cmat_CG_cc, reversible=True, mu=None, return_statdist = True)
+    SD_AA.X = T_to_X(Cmat_AA_cc, SD_AA.T, SD_AA.mu)
+    SD_CG.X = T_to_X(Cmat_CG_cc, SD_CG.T, SD_CG.mu)
 if ( ID.TRJ_type == TRJ_types[0] ): # TRJ_type == '1D'
     SD_AA.bins = deepcopy(bin_ctrs_AA_cc)
     SD_CG.bins = deepcopy(bin_ctrs_CG_cc)
@@ -127,7 +140,10 @@ elif ( ID.TRJ_type == TRJ_types[1] ): # TRJ_type == '2D'
 
 # get the pyemma MCMC samplers ready
 prior = ID.prior
-sampler_CG_b = bias_samp.TransitionMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT) # nb - fixedstep MC
+if ( ID.flag_CTMM ):
+    sampler_CG_b = bias_samp.RateMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT) # nb - fixedstep MC
+else:
+    sampler_CG_b = bias_samp.TransitionMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT) # nb - fixedstep MC
 
 # Get the metastable states (assumes you define some metastable states, but no longer system specific!)
 mss_AA = np.array( sys_mod.get_msstates( SD_AA.T, lcc_AA, bin_ctrs_AA_cc ) )

@@ -22,9 +22,7 @@ exp=math.exp
 
 class TransitionMatrixBiasedSamplerRev(object):
     """
-    Reversible transition matrix sampling using the algorithm from Trendelkamp, Noe, JCP, 2013 for variable stationary distribution.
-    We have added an adjustment to acceptance probability which corresponds to sampling a normal distribution about some constraint, 
-    while employing the unconstrained mle as a prior.
+    Reversible transition matrix sampling using the algorithm from Metzner et al. (2010), adjusted to allow biased sampling according to externally provided information.
     """
 
     def __init__(self, _C, _prior, _X, _MC_type, _lT): 
@@ -34,8 +32,7 @@ class TransitionMatrixBiasedSamplerRev(object):
         Parameters:
         -----------
         C : ndarray(n,n)
-            count matrix containing observed counts. Do not add a prior, because this sampler intrinsically
-            assumes a -1 prior!
+            count matrix containing observed counts.
 
         X : ndarray(n,n)
             expected count matrix, this may be the mle or just the simple symmetrized counts
@@ -52,7 +49,8 @@ class TransitionMatrixBiasedSamplerRev(object):
         self.Crowsum = np.sum(self.C, dtype=float, axis=1, keepdims=True)
         self.Ccolsum = np.sum(self.C, dtype=float, axis=0, keepdims=True)
         self.sc = float(self.C.shape[0]*self.C.shape[1])
-        self.chng_list = np.array( np.where( self.Xexp > 1e-12 ) ) 
+        #self.chng_list = np.array( np.where( self.Xexp > 1e-12 ) ) 
+        self.chng_list = np.array( np.where( self.Xexp > -1. ) ) # try changing all elements
         # 
 	self.eps = 0.0
 	self.lamb = None
@@ -76,17 +74,6 @@ class TransitionMatrixBiasedSamplerRev(object):
         self.nprop_ndE = 0
         self.nprop_pdE = 0
         self.nacc_pdE = 0
-        # degrees of freedom.
-        self.dof = np.zeros(self.n)
-	# variables associated with the beta distribution
-        self.alpha = np.zeros(self.n)
-        self.beta = np.zeros(self.n)
-        # arrays depending only on C, not T
-        for i in range (0, self.n):
-            self.dof[i] = self.n
-            self.alpha[i] = self.Crowsum[i] + self.dof[i] - self.C[i,i] - 1
-            self.beta[i] = self.C[i,i] + 1
-
 
     def _X_to_T(self):
         self.T =  self.X / np.sum(self.X, dtype=float, axis=1, keepdims=True)
@@ -101,7 +88,8 @@ class TransitionMatrixBiasedSamplerRev(object):
     def _update_arrays(self, flag_acc):
         if ( flag_acc ):
             # stat dist
-            self._X_to_mu()
+            if ( not self.fixed_pi ):
+                self._X_to_mu()
             # Energies
             self.EW_old = deepcopy(self.EW)
             self.EQ_old = deepcopy(self.EQ)
@@ -145,6 +133,8 @@ class TransitionMatrixBiasedSamplerRev(object):
             # now, get the bounds
             a = max(a0,a1,a2)
             b = min(b0,b1,b2)
+            if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
+                a = 0.
         else:
             sc = np.sum(self.X, dtype=float)
             kmin = 0.999 * sc # Similar to the Metzner paper, rescaled for arbitrary X normalization
@@ -165,6 +155,8 @@ class TransitionMatrixBiasedSamplerRev(object):
                 # now, get the bounds
                 a = max(a0,a1)
                 b = min(b0,b1)
+                if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
+                    a = 0.
             else: 
                 # the normal Metzner constraints plus slight stricter adjustments
                 a0 = max(-0.5*self.X[i,j], 0.5*(kmin - sc)) # JFR - adjusted a0, b0 so that Xij can change by at most half its current value
@@ -187,6 +179,8 @@ class TransitionMatrixBiasedSamplerRev(object):
                 # now, get the bounds
                 a = max(a0,a1,a2)
                 b = min(b0,b1,b2)
+                if ( self.X[i,j] < 1e-12 ): # if the element is zero, only allow positive moves
+                    a = 0.
            
         # check the bounds
         if ( a > 0 or b < 0 ):
@@ -459,7 +453,7 @@ class TransitionMatrixBiasedSamplerRev(object):
 
         # adjust the changeable element list for fixed-pi
         if (self.fixed_pi is True):
-            self.chng_list = np.delete(self.chng_list, np.where( self.chng_list[0][:] == self.chng_list[1][:] ) ,axis=1)
+            self.chng_list = np.delete(self.chng_list, np.where( self.chng_list[0][:] <= self.chng_list[1][:] ) ,axis=1)
          
         # do the MC! 
         if ( self.MC_type == self.MC_types[0] ): # if MC_type == 'fixed_step'
