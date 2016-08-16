@@ -226,7 +226,9 @@ class TransitionMatrixBiasedSamplerRev(object):
 
         # Shuffle the changeable list of elements
         shuff_chng_list = deepcopy(self.chng_list)
-        shuffle(shuff_chng_list)
+        shuff_chng_list = shuff_chng_list.T
+        np.random.shuffle(shuff_chng_list)
+        shuff_chng_list = shuff_chng_list.T
 
         for ind in range(n_MC): # Loop over the changeable elements
 
@@ -354,9 +356,8 @@ class TransitionMatrixBiasedSamplerRev(object):
             step_ctr += step_len
 
 
+    def sample(self, n_step, T_init = None, X_init = None, mu_init = None, EQ_CG = None, EQ_AA = None, F_fun = None, F_CG = None, beta = None, lamb = None, fixed_pi = False):
 
-
-    def sample(self, n_step, T_init = None, X_init = None, EQ_CG = None, EQ_AA = None, F_fun = None, F_CG = None, beta = None, lamb = None, fixed_pi = False):
         """
         Runs n_step successful! Metzner (or fixed-pi Metzner-type) sampling steps and returns a new transition matrix.
 

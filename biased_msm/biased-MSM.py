@@ -13,10 +13,11 @@ import numpy as np
 import pyemma
 from pyemma.util.discrete_trajectories import read_discrete_trajectory
 # other tools specifically built for this program
-import msmtools_ext.transition_matrix_biased_sampling_rev as bias_samp
+#import msmtools_ext.transition_matrix_biased_sampling_rev as bias_samp
 import input_data as ID
 import samp_data as SD
 from tools.functions import *
+from msmtools.analysis.dense.stationary_vector import stationary_distribution
 # other stuff
 from copy import copy, deepcopy
 import random
@@ -119,7 +120,7 @@ if ( ID.flag_CTMM ):
     CTMM_AA = ContinuousTimeMSM(lag_time=tau_AA)
     CTMM_CG = ContinuousTimeMSM(lag_time=tau_CG)
     CTMM_AA.fit(dtraj_AA)
-    CTMM_CG.fir(dtraj_CG)
+    CTMM_CG.fit(dtraj_CG)
     SD_AA.T = CTMM_AA.ratemat_
     SD_CG.T = CTMM_CG.ratemat_
     SD_AA.mu = K_to_mu(SD_AA.T, tau_AA)
@@ -141,8 +142,10 @@ elif ( ID.TRJ_type == TRJ_types[1] ): # TRJ_type == '2D'
 # get the pyemma MCMC samplers ready
 prior = ID.prior
 if ( ID.flag_CTMM ):
-    sampler_CG_b = bias_samp.RateMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT) # nb - fixedstep MC
+    import msmtools_ext.rate_matrix_biased_sampling_rev as bias_samp
+    sampler_CG_b = bias_samp.RateMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT,tau_CG) # nb - fixedstep MC
 else:
+    import msmtools_ext.transition_matrix_biased_sampling_rev as bias_samp
     sampler_CG_b = bias_samp.TransitionMatrixBiasedSamplerRev(Cmat_CG_cc+prior,prior,SD_CG.X,ID.MC_type,ID.lT) # nb - fixedstep MC
 
 # Get the metastable states (assumes you define some metastable states, but no longer system specific!)
@@ -182,17 +185,33 @@ mfpt_all_fT = lambda T: mfpt_all(T, mss_CG)
 # Choose the biasing function:
 FW_fT = lambda T: sys_mod.calc_FW(T, SD_AA.mfpt, mss_CG, nmfptb, ID.flag_rel_mfpt, ID.FW_params)
 
+if ( ID.flag_CTMM ):
+    T_AA_tmp = K_to_T(SD_AA.T,tau_AA)
+    T_CG_tmp = K_to_T(SD_CG.T,tau_CG)
+else:
+    T_AA_tmp = SD_AA.T
+    T_CG_tmp = SD_CG.T
+
 # 'project' the AA mle onto the CG bins
-X_AA_mapd = project_X0_to_Xf(SD_CG.X, SD_AA.X, lcc_CG, lcc_AA)
-T_AA_mapd = X_to_T(X_AA_mapd)
+if ( ID.flag_CTMM ):   
+    mu_AA_tmp = K_to_mu(SD_AA.T, tau_AA)
+    mu_CG_tmp = K_to_mu(SD_CG.T, tau_CG)
+    X_AA_tmp = T_to_X(Cmat_AA_cc, T_AA_tmp, mu_AA_tmp)
+    X_CG_tmp = T_to_X(Cmat_CG_cc, T_CG_tmp, mu_CG_tmp)
+    X_AA_mapd = project_X0_to_Xf(X_CG_tmp, X_AA_tmp, lcc_CG, lcc_AA)
+    T_AA_mapd = X_to_T(X_AA_mapd)
+else:
+    X_AA_mapd = project_X0_to_Xf(SD_CG.X, SD_AA.X, lcc_CG, lcc_AA)
+    T_AA_mapd = X_to_T(X_AA_mapd)
 
 # Calculate the energies for the maximum likelihood estimates
-SD_AA.EQ = -1.0*( logprob_T(Cmat_AA_cc+prior, SD_AA.T) )
-SD_CG.EQ = -1.0*( logprob_T(Cmat_CG_cc+prior, SD_CG.T) )
+SD_AA.EQ = -1.0*( logprob_T(Cmat_AA_cc+prior, T_AA_tmp) )
+SD_CG.EQ = -1.0*( logprob_T(Cmat_CG_cc+prior, T_CG_tmp) )
 EQ_AA_mapd = -1.0*( logprob_T(Cmat_CG_cc+prior, T_AA_mapd) )
 # nb - F_AA = 0 by definition
-SD_AA.EW = rmse_mfpt_all(SD_AA.T, SD_AA.mfpt, mss_AA, nmfptb, ID.flag_rel_mfpt)
-SD_CG.EW = FW_fT(SD_CG.T)
+#SD_AA.EW = rmse_mfpt_all(T_AA_tmp, SD_AA.mfpt, mss_AA, nmfptb, ID.flag_rel_mfpt)
+SD_AA.EW = FW_fT(T_AA_tmp)
+SD_CG.EW = FW_fT(T_CG_tmp)
 F_AA_mapd = FW_fT(T_AA_mapd)
 
 # parameters for the sampling
@@ -249,8 +268,21 @@ SD_CG_b.outfnm = ID.outfnm+'_CG_b_'+str(rank)
 #SD_CG_b.bins = deepcopy(bin_ctrs_CG_cc)
 
 # Choose an initial model, by interpolating between the CG mle and the AA map'd
-T_init = init_interp*SD_CG.T + (1.0-init_interp)*T_AA_mapd
-X_init = init_interp*SD_CG.X + (1.0-init_interp)*X_AA_mapd
+if ( ID.flag_CTMM ):
+    T_AA_tmp = K_to_T(SD_AA.T,tau_AA)
+    T_CG_tmp = K_to_T(SD_CG.T,tau_CG)
+else:
+    T_AA_tmp = SD_AA.T
+    T_CG_tmp = SD_CG.T
+
+if ( ID.flag_CTMM ):
+    T_init = SD_CG.T
+    X_init = SD_CG.X
+else:
+    T_init = init_interp*SD_CG.T + (1.0-init_interp)*T_AA_mapd
+    X_init = init_interp*SD_CG.X + (1.0-init_interp)*X_AA_mapd
+
+mu_init = stationary_distribution(T_init)
 
 # Restarting options: for now just use the final model as init
 if ( ID.flag_cont ):
@@ -258,20 +290,8 @@ if ( ID.flag_cont ):
     Ndat = data['lamb'].shape[0]
     T_init = deepcopy( data['T'][Ndat-1] )
     X_init = deepcopy( data['X'][Ndat-1] )
+    mu_init = deepcopy( data['mu'][Ndat-1] )
 
-
-''' JFR - changed init_interp so that you can specify the different values by hand now, for rx or other
-# Particular variable settings for different OPT procedures
-if ( ID.OPT_type == OPT_types[0] ): # OPT_type == 'fixed_lamb'        
-    donothing = True
-elif ( ID.OPT_type == OPT_types[1] ): # OPT_type == 'slow_growth' 
-    dlamb = deepcopy(ID.dlamb0) # starting change in lambda
-elif ( ID.OPT_type == OPT_types[2] ): # OPT_type == 'rep_exch'
-    T_init = lamb_b*SD_CG.T + (1.0-lamb_b)*T_AA_mapd # interpolate based on the rep value of lamb
-    X_init = lamb_b*SD_CG.X + (1.0-lamb_b)*X_AA_mapd
-else:
-    raise ValueError('OPT_type not supported!  Check input_data.py')
-'''
 
 # Special check for AA unbiased sampling
 if ( ID.flag_ub ):
@@ -282,8 +302,13 @@ if ( ID.flag_ub ):
     lamb_b = 1.0
 
 # calculate the initial energies of the biased model
-EQ_CG_b_init = -1.0*( logprob_T(Cmat_CG_cc+prior, T_init) )
-EW_CG_b_init = FW_fT(T_init)
+if ( ID.flag_CTMM ):
+    T_init_tmp = K_to_T(T_init, tau_CG)
+    EQ_CG_b_init = -1.0*( logprob_T(Cmat_CG_cc+prior, T_init_tmp) )
+    EW_CG_b_init = FW_fT(T_init_tmp)
+else:
+    EQ_CG_b_init = -1.0*( logprob_T(Cmat_CG_cc+prior, T_init) )
+    EW_CG_b_init = FW_fT(T_init)
 if ( rank == 0 ):
     # print out some info to the screen
     print 'AA mle energies:'
@@ -302,9 +327,9 @@ if ( rank == 0 ):
     print '\n'
 
 if (NSweep_eq != 0): # initialization sweep
-    sampler_CG_b.sample(NMC_p_Sweep, T_init = T_init, X_init = X_init, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+    sampler_CG_b.sample(NMC_p_Sweep, T_init = T_init, X_init = X_init, mu_init = mu_init, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
 for i in range (1, NSweep_eq):
-    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, mu_init = sampler_CG_b.mu, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
     if (i % 100 == 0):
         if ( rank == 0 ):
             print 'On equil sweep '+str(i)+' of '+str(NSweep_eq)
@@ -326,9 +351,9 @@ Nhrnd = 0          # keeps track of the number of half rounds (for OPT_type == '
 
 # initialization sweep
 if (NSweep_eq != 0): 
-    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, mu_init = sampler_CG_b.mu, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
 else:
-    sampler_CG_b.sample(NMC_p_Sweep, T_init = T_init, X_init = X_init, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+    sampler_CG_b.sample(NMC_p_Sweep, T_init = T_init, X_init = X_init, mu_init = mu_init, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
 Sweep_ctr += 1
 SD_CG_b._init(sampler_CG_b)
 SD_CG_b.ts = np.array([deepcopy( est_ts_kfT(sampler_CG_b.T) )])
@@ -352,7 +377,7 @@ SD_CG_b.mfpt = np.array([deepcopy( mfpt_all_fT(sampler_CG_b.T) )])
 
 while (flag_term is False):
     # perform a sweep
-    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, mu_init = sampler_CG_b.mu, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
     Sweep_ctr += 1
     # store the data
     SD_CG_b._update(sampler_CG_b)
@@ -472,9 +497,9 @@ while (flag_term is False):
                     if ( rank == 0 ):
                         print 'starting the equilibration sweeps between lambdas...'
                         print '\n'
-                    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+                    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, mu_init = sampler_CG_b.mu, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
                 for i in range (1, NSweep_eq):
-                    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
+                    sampler_CG_b.sample(NMC_p_Sweep, T_init = sampler_CG_b.T, X_init = sampler_CG_b.X, mu_init = sampler_CG_b.mu, EQ_CG = SD_CG.EQ, EQ_AA = EQ_ref, F_fun = FW_fT, F_CG = SD_CG.EW, beta = beta_b, lamb = lamb_b, fixed_pi = ID.fixed_pi)
                     if (i % 100 == 0):
                         if ( rank == 0 ):
                             print 'On equil sweep '+str(i)+' of '+str(NSweep_eq)

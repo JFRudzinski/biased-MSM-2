@@ -5,6 +5,7 @@ import numpy as np
 from msmtools.analysis import eigenvalues
 from msmtools.analysis import mfpt
 from msmtools.estimation import largest_connected_set, largest_connected_submatrix
+from msmtools.analysis.dense.stationary_vector import stationary_distribution_from_backward_iteration
 
 # other stuff
 from copy import copy, deepcopy
@@ -108,17 +109,19 @@ def K_to_T(K, tau):
     return scipy.linalg.expm(tau*K, q=None)
 
 def S_to_K(S, mu):
-    K = np.dot( np.dot(np.diag(sqrt(mu)**(-1)),S), np.diag(sqrt(mu)) )
+    K = -1.0*np.dot( np.dot(np.diag(np.sqrt(mu)**(-1)),S), np.diag(np.sqrt(mu)) )
     for i in range(K.shape[0]):
         K[i,i] = -( np.sum(K[i]) - K[i,i] )
+    return K
 
 def K_to_mu(K, tau):
     mu = stationary_distribution_from_backward_iteration(K_to_T(K, tau))
+    return mu
 
 def K_to_S(K, mu):
-    S = np.dot( np.dot(np.diag(sqrt(mu)),K), np.diag(sqrt(mu)**(-1)) )
+    S = np.dot( np.dot(np.diag(np.sqrt(mu)),K), np.diag(np.sqrt(mu)**(-1)) )
     S /= np.sum(S, dtype=float)
-
+    return S
 
 ##### OBSERVABLE FUNCTIONS #####
 
